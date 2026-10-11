@@ -1,0 +1,53 @@
+# zecmix gateway + zcash-devtool (unmodified, no Nym support of its own), 2026-10-11, Nym mainnet mixnet
+# zcash-devtool built from zcash/zcash-devtool@5a26ee8 (main). Throwaway zero-balance wallet in /tmp, deleted afterwards; its address is not shown.
+
+$ zecmix gateway -v
+[   0.00s] gateway listening on http://127.0.0.1:9067 -> socks5 127.0.0.1:1080 -> Nym mixnet -> exit gateway -> zec.rocks:443 (TLS)
+[   0.00s] point your wallet's lightwalletd server at http://127.0.0.1:9067
+[   3.09s] dns  zec.rocks -> [137.66.62.60] (DoH via 1.1.1.1, over the mixnet, 3.09s)
+[   3.09s] dial zec.rocks:443 -> socks5 127.0.0.1:1080 -> mixnet -> exit -> 137.66.62.60:443
+[   3.10s] open zec.rocks:443 socks5 CONNECT accepted by the local mixnet client in 0.00s
+[   5.52s] tls  zec.rocks TLS 1.3 alpn="h2" verified for zec.rocks (2.42s)
+[   7.27s] call #1 /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo -> zec.rocks:443 via mixnet: grpc-status=0, 170 bytes, 7.27s
+[   7.27s] self-check ok: upstream ECC LightWalletD v0.5.3, chain=main height=3513950 (7.27s through the gateway)
+[  19.14s] call #2 /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLatestBlock -> zec.rocks:443 via mixnet: grpc-status=0, 44 bytes, 2.82s
+[  20.26s] call #3 /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTreeState -> zec.rocks:443 via mixnet: grpc-status=0, 2925 bytes, 1.12s
+[  26.75s] call #4 /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetSubtreeRoots -> zec.rocks:443 via mixnet: grpc-status=0, 86888 bytes, 2.61s
+[  28.69s] call #5 /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetSubtreeRoots -> zec.rocks:443 via mixnet: grpc-status=0, 59345 bytes, 1.94s
+[  29.41s] call #6 /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetSubtreeRoots -> zec.rocks:443 via mixnet: grpc-status=0, 858 bytes, 0.73s
+[  30.51s] call #7 /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLatestBlock -> zec.rocks:443 via mixnet: grpc-status=0, 44 bytes, 1.09s
+[  31.54s] call #8 /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetAddressUtxosStream -> zec.rocks:443 via mixnet: grpc-status=0, 0 bytes, 1.03s
+[  33.33s] call #9 /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlockRange -> zec.rocks:443 via mixnet: grpc-status=0, 78999 bytes, 1.79s
+[  34.69s] call #10 /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTreeState -> zec.rocks:443 via mixnet: grpc-status=0, 2925 bytes, 1.36s
+
+# in a second terminal:
+$ zcash-devtool wallet -w ./w init --name nymdemo -i ./w.age -n main -s 127.0.0.1:9067 --birthday 3513850
+2026-10-11T10:22:21.154178Z  INFO zcash_devtool::remote: Connecting to 127.0.0.1:9067
+
+$ zcash-devtool wallet -w ./w sync -s 127.0.0.1:9067
+2026-10-11T10:22:28.980073Z  INFO zcash_devtool::remote: Connecting to 127.0.0.1:9067
+2026-10-11T10:22:31.590509Z  INFO zcash_devtool::commands::wallet::sync: Sapling tree has 1128 subtrees
+2026-10-11T10:22:33.528973Z  INFO zcash_devtool::commands::wallet::sync: Orchard tree has 770 subtrees
+2026-10-11T10:22:34.255621Z  INFO zcash_devtool::commands::wallet::sync: Ironwood tree has 11 subtrees
+2026-10-11T10:22:35.348734Z  INFO zcash_devtool::commands::wallet::sync: Latest block height is 3513950
+2026-10-11T10:22:35.349250Z  INFO zcash_devtool::commands::wallet::sync: Refreshing UTXOs for AccountUuid(…) from height 0
+2026-10-11T10:22:36.383634Z  INFO zcash_devtool::commands::wallet::sync: Fetching scan ranges
+2026-10-11T10:22:36.383743Z  INFO zcash_devtool::commands::wallet::sync: Fetched 1 scan ranges
+2026-10-11T10:22:36.383752Z  INFO zcash_devtool::commands::wallet::sync: Fetching ChainTip(3513850..3513951)
+2026-10-11T10:22:39.533208Z  INFO zcash_devtool::commands::wallet::sync: Scanning ChainTip(3513850..3513951)
+2026-10-11T10:22:40.192922Z  INFO zcash_devtool::commands::wallet::sync: Scan complete for range ChainTip(3513850..3513951); progress is 76/76
+2026-10-11T10:22:40.192976Z  INFO zcash_devtool::commands::wallet::sync: Waiting for cached blocks to be deleted...
+
+$ zcash-devtool wallet -w ./w balance
+  (excerpt; balances are all zero)
+    chain_tip_height: BlockHeight(
+        3513950,
+    ),
+    fully_scanned_height: BlockHeight(
+        3513950,
+    ),
+    progress: Progress {
+        scan: Ratio {
+            numerator: 76,
+            denominator: 76,
+        },

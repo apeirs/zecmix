@@ -1,0 +1,105 @@
+# zecmix live run, 2026-10-11T09:28Z, Nym mainnet mixnet, nym-socks5-client 1.1.86 (v2026.19)
+
+$ zecmix nym status
+id                 zecmix
+pid                3905682
+socks5             127.0.0.1:1080
+provider           BbhodbgV55PXxEEBb8yyVDWzMSos1mvpPjQ4rAh6ccQi.66QUH4Pdrw37eCmnzcKGZk1HMess8br7NDCEPPphBhNd@DASDLLKZGUQQNK8dK2qjspR7jFeBQwT5EWfQMXp5bmVY
+anonymous_replies  true
+client_address     ABYYsiabj84HnGd7bCgxArFq6RXcqZSxom8TLDZ76Q3V.CnXDwN6KwDnP6g8hUwACK9QXQbGxqj3AeMxqh1n5pzed@9SvX81LdCuLF3HyBaATRwLppcSGSuS75dXHLggptTbkq
+gateway            9SvX81LdCuLF3HyBaATRwLppcSGSuS75dXHLggptTbkq
+log                /home/a/.local/state/zecmix/zecmix.log
+(exit 0)
+
+$ zecmix ip -v
+[   3.91s] dns  api.ipify.org -> [104.26.13.205 104.26.12.205 172.67.74.152] (DoH via 1.1.1.1, over the mixnet, 3.91s)
+[   3.91s] dial api.ipify.org:443 -> socks5 127.0.0.1:1080 -> mixnet -> exit -> 104.26.13.205:443
+[   3.91s] open api.ipify.org:443 socks5 CONNECT accepted by the local mixnet client in 0.00s
+https://api.ipify.org sees this request coming from 185.191.239.61 (8.30s over the mixnet)
+= Nym node 3156 (CH, exit gateway: true) in the nym-api node list
+(exit 0)
+
+$ zecmix info -v
+[   0.00s] lwd  server zec.rocks:443 over the Nym mixnet (socks5 127.0.0.1:1080, dns=doh); no clearnet fallback
+[   3.11s] dns  zec.rocks -> [137.66.62.60] (DoH via 1.1.1.1, over the mixnet, 3.11s)
+[   3.11s] dial zec.rocks:443 -> socks5 127.0.0.1:1080 -> mixnet -> exit -> 137.66.62.60:443
+[   3.11s] open zec.rocks:443 socks5 CONNECT accepted by the local mixnet client in 0.00s
+server            zec.rocks:443 (via Nym mixnet, 7.08s)
+chain             main
+block height      3513917 (estimated 3513918)
+vendor            ECC LightWalletD
+version           v0.5.3 (062e8bfc5bb47e42e3c26567cd6e093cfb854ed4)
+node              v1.5.0+g7632c2e15a8f /Zakura:1.5.0/
+consensus branch  37a5165b
+sapling active    419200
+next upgrade      - 0
+protocol version  v0.5.0
+(exit 0)
+
+$ zecmix tip
+3513917  0000000000536e9a4fe3af7f4fb2a5f786525ee35a8e3dab3e4c4359c3581ada    (zec.rocks:443, via Nym mixnet, 5.35s)
+(exit 0)
+
+$ zecmix blocks tip-9 tip
+HEIGHT   HASH                                                             TIME (UTC)          TXS  T-IN T-OUT SAPOUT SAPSP  ORCH IRONW  BYTES
+3513908  000000000039c21fddd8f98aed70d284fdd7605c2df546a5304495ff0e8a56ed 2026-10-11 09:19:09   1     0     0      2     1     0     0    418
+3513909  00000000004f365329dab9dd0696eeac45391ea9abe1fcc7d7b412e5e8c15d16 2026-10-11 09:19:32   0     0     0      0     0     0     0     95
+3513910  0000000000053f233f5ba83df4cf976a43db2526482951992eef68ac4d5e9292 2026-10-11 09:20:10   1     0     0      2     0     0     0    382
+3513911  000000000042d11212f98f8a646985c672f9768499198ff7e7f172940ceecdb4 2026-10-11 09:22:03   3     0     0      2     0     0     4   1096
+3513912  000000000064b9b85195c53ea921ec318eb7108814644934a2b4694350fdb1b9 2026-10-11 09:22:08   0     0     0      0     0     0     0     95
+3513913  00000000006726823a422edc608f6e09afdabeb1fe83309ca90e491978ace995 2026-10-11 09:22:27   0     0     0      0     0     0     0     95
+3513914  00000000002e8a7ee65072b9988babcdd4f1bd095d5198222541b996d3cba33e 2026-10-11 09:24:00   4     0     0      2     0     0     5   1294
+3513915  00000000000750814927ac8fb5be1324e43e548a50d6a7cf4bc77bc079b0bcdb 2026-10-11 09:24:40   0     0     0      0     0     0     0     95
+3513916  000000000040ae07ef08ecd9caab77731c48c81ed9f3f7a2b31072669704289a 2026-10-11 09:26:14   2     0     0      0     0     0     6   1127
+3513917  0000000000536e9a4fe3af7f4fb2a5f786525ee35a8e3dab3e4c4359c3581ada 2026-10-11 09:27:36   3     0     0      0     0     0     7   1325
+10 compact blocks 3513908..3513917, 6022 bytes, 8 sapling outputs, 0 orchard + 22 ironwood actions, prev-hash chain linked; 2.20s (zec.rocks:443, via Nym mixnet)
+(exit 0)
+
+$ zecmix treestate 3513720
+network       main
+height        3513720
+hash          00000000006dc437f231275c1238c78a53279a1f76bbed9571966a84f45bdaa9
+time          2026-10-11T05:29:30Z
+sapling tree  017f4c2b301a…1e0000000000 (964 hex chars)
+orchard tree  01e5fa0353ba…000000000000 (900 hex chars)
+(zec.rocks:443, via Nym mixnet, 5.75s)
+(exit 0)
+
+$ zecmix tx 712f81c604b20db3b66f72d0f688e1e292e6abead4ba70672f69b14f2ad35498
+712f81c604b20db3b66f72d0f688e1e292e6abead4ba70672f69b14f2ad35498  mined at height 3513720, v6 (overwintered, version group d884b698, consensus branch 37a5165b), 21790 bytes    (zec.rocks:443, via Nym mixnet, 6.35s)
+(exit 0)
+
+$ zecmix tx 712f81c6...5498 --raw > already-mined-tx.hex   # a real mainnet tx from block 3,513,720, fetched over the mixnet
+(exit 0, 43581 hex chars)
+
+$ zecmix send examples/already-mined-tx.hex -v
+tx: v6 (overwintered, version group d884b698, consensus branch 37a5165b), 21790 bytes
+[   0.00s] lwd  server zec.rocks:443 over the Nym mixnet (socks5 127.0.0.1:1080, dns=doh); no clearnet fallback
+[   1.64s] dns  zec.rocks -> [137.66.62.60] (DoH via 1.1.1.1, over the mixnet, 1.64s)
+[   1.64s] dial zec.rocks:443 -> socks5 127.0.0.1:1080 -> mixnet -> exit -> 137.66.62.60:443
+[   1.67s] open zec.rocks:443 socks5 CONNECT accepted by the local mixnet client in 0.02s
+REJECTED  zec.rocks:443  code -25  4.80s  failed to validate tx: WtxId("private"), error: transaction is already in state    (via Nym mixnet)
+(exit 3)
+
+$ zecmix send examples/invalid-tx.hex
+tx: v5 (overwintered, version group 26a7270a, consensus branch 00000000), 68 bytes
+REJECTED  zec.rocks:443  code -22  7.24s  parse error: invalid consensus branch id    (via Nym mixnet)
+(exit 3)
+
+$ zecmix tip --dns exit --server eu.zec.rocks
+3513918  0000000000392671dac1fa7479b23b971cf0528fe2bc26ed11d1a4f06155dfbc    (eu.zec.rocks, via Nym mixnet, 3.33s)
+(exit 0)
+
+$ zecmix info --server testnet.zec.rocks
+server            testnet.zec.rocks (via Nym mixnet, 5.85s)
+chain             test
+block height      4488343 (estimated 4488344)
+vendor            ECC LightWalletD
+version           v0.5.4 (c22ca9ba67676e61cd8ee107538ffd9a77799bab)
+node              v7.0.0-rc.0 /Zebra:7.0.0-rc.0/
+consensus branch  77190ad9
+sapling active    280000
+next upgrade      - 0
+protocol version  v0.5.0
+(exit 0)
+
