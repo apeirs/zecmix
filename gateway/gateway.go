@@ -92,14 +92,39 @@ func (g *Gateway) Handler() http.Handler {
 			}
 			pr.Out.Header.Set("User-Agent", "grpc-go")
 		},
-		Transport:     tr,
-		FlushInterval: -1, // stream every message as it arrives (GetBlockRange)
+		Transport:      tr,
+		ModifyResponse: trailersOnlyToTrailers,
+		FlushInterval:  -1, // stream every message as it arrives (GetBlockRange)
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			g.logf("call %s FAILED upstream via mixnet: %v", r.URL.Path, err)
 			grpcError(w, 14, "zecmix: upstream unreachable over the Nym mixnet: "+err.Error())
 		},
 	}
 	return http.HandlerFunc(g.serve)
+}
+
+// trailersOnlyToTrailers turns an upstream gRPC "trailers-only" response (an
+// error status sent in the only HEADERS frame, no body) into headers + trailers.
+// The proxy flushes the response headers before it copies the body, so a
+// status left in the headers would arrive in a HEADERS frame without
+// END_STREAM, and the wallet would see "server closed the stream without
+// sending trailers" instead of the server's error (e.g. a rejected
+// SendTransaction).
+func trailersOnlyToTrailers(res *http.Response) error {
+	st := res.Header.Get("Grpc-Status")
+	if st == "" || res.Trailer.Get("Grpc-Status") != "" {
+		return nil
+	}
+	if res.Trailer == nil {
+		res.Trailer = http.Header{}
+	}
+	for _, k := range []string{"Grpc-Status", "Grpc-Message", "Grpc-Status-Details-Bin"} {
+		if v, ok := res.Header[k]; ok {
+			res.Trailer[k] = v
+			res.Header.Del(k)
+		}
+	}
+	return nil
 }
 
 // grpcError writes a gRPC "trailers-only" error response.
