@@ -4,8 +4,9 @@
 // A wallet (zingo-cli, zcash-devtool, any lightwalletd client that accepts a
 // custom server URL) connects to 127.0.0.1. Each call is proxied at the HTTP/2
 // level (gRPC streams, trailers and flow control are preserved) over one TLS
-// connection to the upstream server; that TLS connection runs inside a SOCKS5
-// stream through nym-socks5-client, the mixnet and an exit gateway. The
+// connection to the upstream server; that TLS connection runs inside a
+// mixnet stream (a nymdial child process by default, or a SOCKS5 stream
+// through nym-socks5-client), through the mixnet and an exit gateway. The
 // upstream server sees the exit gateway's IP, never the wallet's.
 package gateway
 
@@ -38,6 +39,15 @@ type Gateway struct {
 
 	calls atomic.Int64
 	proxy *httputil.ReverseProxy
+	tr    *http2.Transport
+}
+
+// Close drops the upstream connections (and, with nymdial, ends their
+// mixnet clients).
+func (g *Gateway) Close() {
+	if g.tr != nil {
+		g.tr.CloseIdleConnections()
+	}
 }
 
 func (g *Gateway) logf(format string, args ...any) {
@@ -65,6 +75,7 @@ func (g *Gateway) Handler() http.Handler {
 		ReadIdleTimeout: 45 * time.Second,
 		PingTimeout:     30 * time.Second,
 	}
+	g.tr = tr
 	scheme := "https"
 	if g.UpstreamPlaintext {
 		scheme = "http"

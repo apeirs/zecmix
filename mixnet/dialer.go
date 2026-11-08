@@ -43,9 +43,14 @@ var dohResolvers = []dohResolver{
 // Tracer receives one human-readable line per network step.
 type Tracer func(format string, args ...any)
 
-// Dialer opens TCP streams through the Nym mixnet (SOCKS5 to nym-socks5-client).
-// The local resolver is never used: names are resolved over the mixnet.
+// Dialer opens TCP streams through the Nym mixnet: with nymdial (a fresh
+// in-process mixnet client per stream) when Nymdial is set, otherwise SOCKS5 to
+// a running nym-socks5-client. The local resolver is never used: names are
+// resolved over the mixnet.
 type Dialer struct {
+	// Nymdial, when set, carries every stream; Proxy and DNS are then unused
+	// (nymdial resolves names with DoH through its own tunnel).
+	Nymdial *Nymdial
 	Proxy   string        // host:port of nym-socks5-client
 	DNS     string        // DNSDoH (default) or DNSExit
 	Timeout time.Duration // per-stream SOCKS handshake timeout (mixnet round trips are slow)
@@ -57,6 +62,22 @@ type Dialer struct {
 
 	mu    sync.Mutex
 	cache map[string]dnsEntry
+	exits []ExitInfo
+}
+
+// Exits returns the exit of every nymdial stream opened so far, oldest first.
+func (d *Dialer) Exits() []ExitInfo {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]ExitInfo(nil), d.exits...)
+}
+
+// Describe says how streams leave this machine, for logs.
+func (d *Dialer) Describe() string {
+	if d.Nymdial != nil {
+		return "nymdial (a fresh mixnet client per connection, DNS over the mixnet)"
+	}
+	return fmt.Sprintf("socks5 %s, dns=%s", d.Proxy, d.DNS)
 }
 
 type dnsEntry struct {
@@ -86,6 +107,19 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 	host, port, err := splitPort(addr)
 	if err != nil {
 		return nil, err
+	}
+	if d.Nymdial != nil {
+		t0 := time.Now()
+		d.trace("dial %s:%d -> nymdial -> mixnet -> exit -> %s:%d (name resolved in the tunnel)", host, port, host, port)
+		c, err := d.Nymdial.Open(ctx, host, port)
+		if err != nil {
+			d.trace("fail %s:%d after %.2fs: %v", host, port, time.Since(t0).Seconds(), err)
+			return nil, err
+		}
+		d.mu.Lock()
+		d.exits = append(d.exits, c.Exit)
+		d.mu.Unlock()
+		return c, nil
 	}
 	target := host
 	if d.DNS != DNSExit {

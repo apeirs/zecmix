@@ -10,20 +10,26 @@ import (
 	"github.com/apeirs/zecmix/walletrpc"
 )
 
-// Opt-in: ZECMIX_LIVE=1 go test -run Live -v .   (needs nym-socks5-client on $ZECMIX_PROXY or 127.0.0.1:1080)
+// Opt-in: ZECMIX_LIVE=1 go test -run Live -v .
+// Transport: nymdial (on PATH or $ZECMIX_NYMDIAL); set ZECMIX_PROXY to use a
+// running nym-socks5-client instead.
 func TestLiveMainnetOverMixnet(t *testing.T) {
 	if os.Getenv("ZECMIX_LIVE") == "" {
 		t.Skip("set ZECMIX_LIVE=1 to talk to mainnet lightwalletd through the real Nym mixnet")
 	}
 	proxy := os.Getenv("ZECMIX_PROXY")
-	if proxy == "" {
-		proxy = "127.0.0.1:1080"
-	}
 	server := os.Getenv("ZECMIX_SERVER")
 	if server == "" {
 		server = lwd.DefaultServer
 	}
 	d := &mixnet.Dialer{Proxy: proxy, DNS: mixnet.DNSDoH, Trace: t.Logf}
+	if proxy == "" {
+		bin, err := mixnet.FindNymdial("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		d = &mixnet.Dialer{Nymdial: &mixnet.Nymdial{Binary: bin, Trace: t.Logf}, Trace: t.Logf}
+	}
 	cc, cl, err := lwd.Dial(d, server, lwd.Options{})
 	if err != nil {
 		t.Fatal(err)

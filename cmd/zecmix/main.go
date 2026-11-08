@@ -1,7 +1,6 @@
 // Command zecmix: Zcash light-wallet traffic over the Nym mixnet.
 //
-//	zecmix nym setup                 start nym-socks5-client on a random active exit gateway
-//	zecmix gateway                   local lightwalletd endpoint (127.0.0.1:9067) -> mixnet -> public server
+//	zecmix gateway                   local lightwalletd endpoint (127.0.0.1:9067) -> nymdial -> mixnet -> public server
 //	zecmix info | tip | blocks | treestate | tx | send
 //	zecmix ip                        which IP do servers see? (a Nym exit gateway)
 package main
@@ -18,6 +17,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,7 +34,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 var start = time.Now()
 
@@ -49,9 +49,13 @@ func die(err error) {
 
 // common flags shared by network commands.
 type common struct {
+	transport, nymdial string
+	countries, exits   []string
+	setupTimeout       time.Duration
 	proxy, dns, server string
 	verbose, jsonOut   bool
 	timeout            time.Duration
+	fs                 *flag.FlagSet
 }
 
 func envOr(k, def string) string {
@@ -62,8 +66,14 @@ func envOr(k, def string) string {
 }
 
 func (c *common) register(fs *flag.FlagSet) {
-	fs.StringVar(&c.proxy, "proxy", envOr("ZECMIX_PROXY", "127.0.0.1:1080"), "nym-socks5-client SOCKS5 address ($ZECMIX_PROXY)")
-	fs.StringVar(&c.dns, "dns", envOr("ZECMIX_DNS", mixnet.DNSDoH), "name resolution: doh (DoH over the mixnet, connect by IPv4) or exit (exit gateway resolves)")
+	c.fs = fs
+	fs.StringVar(&c.transport, "transport", envOr("ZECMIX_TRANSPORT", "nymdial"), "nymdial (a fresh in-process mixnet client per connection, default) or socks5 (a running nym-socks5-client) ($ZECMIX_TRANSPORT)")
+	fs.StringVar(&c.nymdial, "nymdial", "", "nymdial binary (default: $ZECMIX_NYMDIAL, else nymdial on PATH)")
+	fs.Func("country", "nymdial: only exits in this country (ISO alpha-2, repeatable)", func(v string) error { c.countries = append(c.countries, v); return nil })
+	fs.Func("exit", "nymdial: try this exit first (node id or IPR address, repeatable)", func(v string) error { c.exits = append(c.exits, v); return nil })
+	fs.DurationVar(&c.setupTimeout, "setup-timeout", 3*time.Minute, "nymdial: budget to get a connection open, exit failover included")
+	fs.StringVar(&c.proxy, "proxy", envOr("ZECMIX_PROXY", "127.0.0.1:1080"), "socks5: nym-socks5-client SOCKS5 address ($ZECMIX_PROXY)")
+	fs.StringVar(&c.dns, "dns", envOr("ZECMIX_DNS", mixnet.DNSDoH), "socks5: name resolution, doh (DoH over the mixnet, connect by IPv4) or exit (exit gateway resolves); nymdial always resolves with DoH in its tunnel")
 	fs.StringVar(&c.server, "server", envOr("ZECMIX_SERVER", lwd.DefaultServer), "lightwalletd server host:port, TLS ($ZECMIX_SERVER)")
 	fs.BoolVar(&c.verbose, "v", false, "trace every mixnet step to stderr")
 	fs.BoolVar(&c.jsonOut, "json", false, "JSON output")
@@ -71,6 +81,35 @@ func (c *common) register(fs *flag.FlagSet) {
 }
 
 func (c *common) dialer() *mixnet.Dialer {
+	switch c.transport {
+	case "nymdial":
+		explicit := map[string]bool{}
+		c.fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+		if explicit["proxy"] || explicit["dns"] {
+			die(errors.New("--proxy and --dns are for the socks5 transport; add --transport socks5 to use a nym-socks5-client"))
+		}
+		bin, err := mixnet.FindNymdial(c.nymdial)
+		if err != nil {
+			die(err)
+		}
+		var args []string
+		for _, cc := range c.countries {
+			args = append(args, "--country", cc)
+		}
+		for _, e := range c.exits {
+			args = append(args, "--exit", e)
+		}
+		nd := &mixnet.Nymdial{Binary: bin, Args: args, SetupTimeout: c.setupTimeout}
+		d := &mixnet.Dialer{Nymdial: nd}
+		if c.verbose {
+			nd.Trace = tracef
+			d.Trace = tracef
+		}
+		return d
+	case "socks5":
+	default:
+		die(fmt.Errorf("--transport must be nymdial or socks5"))
+	}
 	proxy, err := mixnet.ParseProxy(c.proxy)
 	if err != nil {
 		die(err)
@@ -88,7 +127,7 @@ func (c *common) dialer() *mixnet.Dialer {
 func (c *common) client() (*grpc.ClientConn, walletrpc.CompactTxStreamerClient, *mixnet.Dialer) {
 	d := c.dialer()
 	if c.verbose {
-		tracef("lwd  server %s over the Nym mixnet (socks5 %s, dns=%s); no clearnet fallback", c.server, d.Proxy, d.DNS)
+		tracef("lwd  server %s over the Nym mixnet (%s); no clearnet fallback", c.server, d.Describe())
 	}
 	cc, cl, err := lwd.Dial(d, c.server, lwd.Options{})
 	if err != nil {
@@ -123,7 +162,12 @@ func grpcErr(what string, err error) error {
 func usage() {
 	fmt.Fprint(os.Stderr, `zecmix `+version+`: Zcash light-wallet traffic over the Nym mixnet
 
-Mixnet client (official nym-socks5-client):
+Transport: nymdial (default). Every connection is a "nymdial connect" child
+process: a fresh in-process mixnet client, its own exit, DNS over the mixnet.
+Only the nymdial binary is needed (https://github.com/apeirs/nymdial; on PATH,
+--nymdial PATH or $ZECMIX_NYMDIAL). "nymdial exits" lists the exits.
+
+Old transport, opt-in with --transport socks5 (official nym-socks5-client):
   zecmix nym setup [--binary PATH] [--port 1080]   init on a random active exit gateway, then start
   zecmix nym start | stop | status | exits
 
@@ -140,8 +184,11 @@ Talk to lightwalletd directly over the mixnet:
   zecmix ip                      which IP do servers see? (should be a Nym exit gateway)
   zecmix servers                 known public lightwalletd servers
 
-Common flags: --server HOST:PORT --proxy 127.0.0.1:1080 --dns doh|exit -v --json --timeout 3m
-There is no clearnet fallback: if the mixnet client is down, zecmix refuses to connect.
+Common flags: --server HOST:PORT -v --json --timeout 3m
+  nymdial: --nymdial PATH --country CC --exit NODE --setup-timeout 3m
+  socks5:  --transport socks5 --proxy 127.0.0.1:1080 --dns doh|exit
+There is no clearnet fallback: if nymdial is missing or no exit works (or, on
+socks5, the mixnet client is down), zecmix refuses to connect.
 `)
 }
 
@@ -670,6 +717,16 @@ func cmdIP(args []string) {
 	el := time.Since(t0).Seconds()
 	res := map[string]any{"service": svc, "seen_ip": ip, "elapsed_s": el}
 	human := fmt.Sprintf("%s sees this request coming from %s (%.2fs over the mixnet)", svc, ip, el)
+	if ex := d.Exits(); len(ex) > 0 {
+		last := ex[len(ex)-1]
+		match := slices.Contains(last.IPs, ip)
+		res["exit"], res["matches_exit"] = last, match
+		if match {
+			human += fmt.Sprintf("\n= the exit nymdial used: Nym %s", last.Label)
+		} else {
+			human += fmt.Sprintf("\nWARNING: not an IP of the exit nymdial used (%s: %s)", last.Label, strings.Join(last.IPs, ", "))
+		}
+	}
 	if !*noLookup {
 		// nym-api is queried directly, like nym-socks5-client does for topology.
 		n, err := nym.NodeByIP(nym.NymAPI, ip)
@@ -695,7 +752,7 @@ func cmdGateway(args []string) {
 	c.register(fs)
 	listen := fs.String("listen", "127.0.0.1:9067", "local listen address")
 	useTLS := fs.Bool("tls", false, "serve TLS with a self-signed localhost certificate (for wallets that require https://)")
-	allowRemote := fs.Bool("allow-remote", false, "allow a non-loopback listen address (anyone who can reach it can use your mixnet client)")
+	allowRemote := fs.Bool("allow-remote", false, "allow a non-loopback listen address (anyone who can reach it can send calls through the mixnet to the upstream server)")
 	noCheck := fs.Bool("no-check", false, "skip the startup self-test through the gateway")
 	parse(fs, args)
 	if !gateway.IsLoopback(*listen) && !*allowRemote {
@@ -740,7 +797,7 @@ func cmdGateway(args []string) {
 		host = "localhost"
 	}
 	url := fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(host, port))
-	tracef("gateway listening on %s -> socks5 %s -> Nym mixnet -> exit gateway -> %s (TLS)", url, d.Proxy, upstream)
+	tracef("gateway listening on %s -> %s -> Nym mixnet -> exit gateway -> %s (TLS)", url, d.Describe(), upstream)
 	tracef("point your wallet's lightwalletd server at %s", url)
 	if !*noCheck {
 		go selfCheck(ln.Addr().String(), tlsCfg != nil, c.timeout)
@@ -752,6 +809,7 @@ func cmdGateway(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+	g.Close()
 }
 
 // selfCheck calls GetLightdInfo through the local gateway (and therefore the mixnet).
@@ -773,7 +831,7 @@ func selfCheck(addr string, isTLS bool, timeout time.Duration) {
 	t0 := time.Now()
 	info, err := walletrpc.NewCompactTxStreamerClient(cc).GetLightdInfo(ctx, &walletrpc.Empty{})
 	if err != nil {
-		tracef("self-check FAILED: %v (is nym-socks5-client running? `zecmix nym status`)", err)
+		tracef("self-check FAILED: %v (with --transport socks5: is nym-socks5-client running? `zecmix nym status`)", err)
 		return
 	}
 	tracef("self-check ok: upstream %s %s, chain=%s height=%d (%.2fs through the gateway)", info.Vendor, info.Version, info.ChainName, info.BlockHeight, time.Since(t0).Seconds())
