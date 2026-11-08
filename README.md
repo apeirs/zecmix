@@ -12,9 +12,14 @@ syncs from and broadcasts through. It has two parts:
   `blocks` (streams compact blocks), `treestate`, `tx`, and `send` (raw
   transaction broadcast), plus `ip` to show which address the servers see.
 
-It is a single static Go binary. It drives Nym's official `nym-socks5-client`
-and does not reimplement any mixnet cryptography. Sphinx packets, cover
-traffic, Poisson delays and gateway handling all come from Nym's code.
+It is a single static Go binary. Since 0.2.0 it reaches the mixnet through
+[nymdial](https://github.com/apeirs/nymdial), a small Rust binary on Nym's own
+`nym-sdk` and `nym-smolmix`: each upstream connection is a fresh, short-lived
+mixnet client inside a `nymdial` process. There is no `nym-socks5-client` to
+install, init and keep running, and no local SOCKS port. zecmix does not
+reimplement any mixnet cryptography: Sphinx packets, cover traffic, Poisson
+delays and gateway handling all come from Nym's code. The old
+`nym-socks5-client` path is still there behind `--transport socks5`.
 
 By apeir (https://apeir.dk/online/).
 
@@ -52,32 +57,39 @@ a VPN, a system-wide proxy, or a server run by anyone.
    ▼
  zecmix gateway 127.0.0.1:9067 ── HTTP/2 reverse proxy, streams + trailers preserved
    │  TLS 1.3 to zec.rocks (verified against system roots, SNI zec.rocks, ALPN h2)
-   ▼  ...inside a SOCKS5 stream
- nym-socks5-client 127.0.0.1:1080 ── Sphinx packets, cover traffic, reply SURBs
-   ▼
- entry gateway → 3 mix layers → exit gateway (network requester, Nym exit policy)
+   ▼  ...over a socketpair to a child process
+ nymdial connect zec.rocks 443 ── a fresh mixnet client + userspace TCP/IP (smoltcp),
+   │                                DNS-over-HTTPS through the tunnel
+   ▼  Sphinx packets, cover traffic; replies via SURBs
+ entry gateway → 3 mix layers → exit gateway (IP Packet Router, Nym exit policy)
    ▼  TCP
  public lightwalletd (zec.rocks:443) ── sees the exit gateway's IP, not yours
 ```
 
 - **End-to-end TLS.** The exit gateway relays ciphertext only. The server
   certificate is verified for the real hostname.
-- **One mixnet stream per gateway session.** All of a wallet's calls are
-  multiplexed as HTTP/2 streams over a single TLS connection inside one SOCKS5
-  stream. You pay the mixnet setup cost once, and a sync does not open
-  hundreds of streams.
-- **No local DNS.** By default (`--dns doh`) server names are resolved with
-  DNS-over-HTTPS *sent through the mixnet* (Cloudflare 1.1.1.1, then Google
-  8.8.8.8, both reached by IP literal), then connected by IPv4. The reason:
-  some exits have broken IPv6 routes and stall on AAAA records (I hit this
-  while building mixpool). `--dns exit` hands the hostname to the exit instead.
-  Either way, your local resolver never sees the server name. The gRPC client
-  uses the `passthrough` resolver on purpose, because gRPC's default `dns`
-  resolver would look the name up locally.
-- **No clearnet fallback.** If `nym-socks5-client` is not running, the CLI
-  refuses to connect, and the gateway answers every call with gRPC
-  `UNAVAILABLE` ("upstream unreachable over the Nym mixnet"). It never goes
-  direct.
+- **One mixnet client per upstream connection.** Every connection zecmix opens
+  is a `nymdial connect HOST PORT --events` child process with one end of a
+  socketpair as its stdin and stdout; zecmix keeps the other end as an ordinary
+  `net.Conn` and runs TLS and HTTP/2 over it. nymdial starts a new ephemeral
+  Nym client (new identity), picks an exit from the nym-api (IP Packet Router
+  exits, performance-weighted random order), health-checks the tunnel, skips
+  exits that don't answer, and reports the exit (node id, country, IPs) as a
+  JSON line, which zecmix logs.
+- **One connection per gateway session.** All of a wallet's calls are
+  multiplexed as HTTP/2 streams over a single TLS connection, so one nymdial
+  process carries a whole sync. You pay the setup cost once, and a sync does
+  not open hundreds of streams. If the connection dies, the next call opens a
+  new one (a new client and exit).
+- **No local DNS.** The server name is passed to nymdial unresolved, and
+  nymdial resolves it with DNS-over-HTTPS through its tunnel (Quad9, Mullvad,
+  Cloudflare at pinned IPs). The gRPC client uses the `passthrough` resolver on
+  purpose, because gRPC's default `dns` resolver would look the name up
+  locally. (On `--transport socks5`, `--dns doh` does DoH through the SOCKS
+  stream and `--dns exit` hands the name to the exit.)
+- **No clearnet fallback.** If nymdial is missing or no exit works (or, on
+  socks5, the client isn't running), the CLI refuses to connect, and the
+  gateway answers every call with gRPC `UNAVAILABLE`. It never goes direct.
 - **No identifying headers.** The gateway sets `:authority` to the upstream
   host, never adds `X-Forwarded-For`/`Forwarded`/`Via`, strips them if a
   client sends them, and replaces the wallet's User-Agent with a generic one.
@@ -85,6 +97,14 @@ a VPN, a system-wide proxy, or a server run by anyone.
   you pass `--allow-remote`.
 
 ### How Nym is used
+
+- **nymdial (default):** `nym-sdk` 1.21.6 + `nym-smolmix` 1.21.6. Each process
+  is an ephemeral `MixnetClient` with an `IpMixStream` to the exit's IP Packet
+  Router, and smoltcp on top. The IPR answers through reply SURBs, so it never
+  learns the client's Nym address. The exit list comes from the nym-api
+  (`nymdial exits` shows it); `--country` and `--exit` narrow it.
+
+On `--transport socks5`:
 
 - `zecmix nym setup` asks the Nym API for active exit gateways that run a
   network requester with the exit policy and perform at 0.95 or better. It
@@ -101,18 +121,23 @@ a VPN, a system-wide proxy, or a server run by anyone.
 
 ## Install
 
+Linux or macOS (the nymdial transport uses a Unix socketpair).
+
 ```sh
 # 1. zecmix (Go 1.26+)
 go install github.com/apeirs/zecmix/cmd/zecmix@latest
 
-# 2. Nym's SOCKS5 client: download nym-socks5-client from
-#    https://github.com/nymtech/nym/releases (nym-binaries-*), check its sha256
-#    against the release's hashes.json, chmod +x, then:
-export ZECMIX_NYM_SOCKS5=/path/to/nym-socks5-client
+# 2. nymdial (Rust 1.85+); zecmix finds it on PATH, or --nymdial PATH / $ZECMIX_NYMDIAL
+cargo install --git https://github.com/apeirs/nymdial
 
-# 3. Join the mixnet (random active exit gateway, reply SURBs on)
-zecmix nym setup
+# 3. Check: which IP does a server see? It should be the exit nymdial used.
+zecmix ip
 ```
+
+Only for `--transport socks5`: download `nym-socks5-client` from
+https://github.com/nymtech/nym/releases (nym-binaries-*), check its sha256
+against the release's hashes.json, `chmod +x`, set
+`ZECMIX_NYM_SOCKS5=/path/to/nym-socks5-client` and run `zecmix nym setup`.
 
 ## Usage
 
@@ -151,20 +176,68 @@ zecmix blocks tip-9 tip           # GetBlockRange: stream + check the prev-hash 
 zecmix treestate 3513720          # GetTreeState (or `latest`)
 zecmix tx <txid> [--raw]          # GetTransaction
 zecmix send tx.hex                # SendTransaction (hex string, file, or - for stdin)
-zecmix ip                         # what IP do servers see? checked against the nym-api node list
+zecmix ip                         # what IP do servers see? checked against the exit nymdial used and the nym-api node list
 zecmix servers                    # known public servers
-zecmix nym exits | status | stop
+nymdial exits                     # the exits nymdial picks from
+zecmix nym exits | status | stop  # socks5 only
 ```
 
-Common flags: `--server host:port`, `--proxy 127.0.0.1:1080`, `--dns doh|exit`,
-`-v` (trace every mixnet step), `--json`, `--timeout 3m`. Environment
-variables: `ZECMIX_SERVER`, `ZECMIX_PROXY`, `ZECMIX_DNS`, `ZECMIX_NYM_SOCKS5`.
+Common flags: `--server host:port`, `-v` (trace every mixnet step, the exit and
+nymdial's own log), `--json`, `--timeout 3m`. nymdial: `--nymdial PATH`,
+`--country CC` and `--exit NODE` (repeatable, passed to nymdial),
+`--setup-timeout 3m` (per connection, exit failover included). socks5:
+`--transport socks5`, `--proxy 127.0.0.1:1080`, `--dns doh|exit`. Environment
+variables: `ZECMIX_SERVER`, `ZECMIX_TRANSPORT`, `ZECMIX_NYMDIAL`,
+`ZECMIX_PROXY`, `ZECMIX_DNS`, `ZECMIX_NYM_SOCKS5`.
 
 `send` checks the transaction header locally first (hex, version, version group
 id), so a copy-paste mistake never reaches the network. It exits 3 when the
 server rejects the transaction.
 
-## Proof: live run on the mainnet mixnet
+## Live run with nymdial (Nym mainnet, 2026-11-08)
+
+Ten runs. Each run starts `zecmix gateway`, waits for its self-check, then
+points zecmix's own Go gRPC client at the gateway as a wallet would:
+`info` (GetLightdInfo), `tip` (GetLatestBlock), `blocks tip-99 tip` (a
+100-block compact-block sync, prev-hash chain checked) and `send` of an
+already-mined mainnet transaction (the node's rejection must come back). Then a
+separate `zecmix ip`. Upstream: `zec.rocks:443` (lightwalletd v0.6.1 on Zebra 7).
+
+```
+$ zecmix gateway -v       (run 1, excerpt)
+[   7.02s] nym  zec.rocks:443 open via exit node 2681 (CH) (fresh mixnet client; tunnel 5.54s, DNS+TCP 1.47s, 7.02s in all)
+[   9.18s] tls  zec.rocks TLS 1.3 alpn="h2" verified for zec.rocks (2.17s)
+[  10.54s] self-check ok: upstream ECC LightWalletD v0.6.1, chain=main height=3551978 (10.54s through the gateway)
+[  12.46s] call #3 .../GetLatestBlock -> zec.rocks:443 via mixnet: grpc-status=0, 44 bytes, 1.02s
+[  16.43s] call #5 .../GetBlockRange -> zec.rocks:443 via mixnet: grpc-status=0, 38141 bytes, 2.43s
+[  20.80s] call #6 .../SendTransaction -> zec.rocks:443 via mixnet: grpc-status=0, 97 bytes, 4.36s
+$ zecmix send examples/already-mined-tx.hex --server http://127.0.0.1:9067
+REJECTED  ...  code -25  failed to validate tx: WtxId("private"), error: transaction is already in state    (via Nym mixnet)
+```
+
+| step (10 runs) | ok | wall time: median (min, max) |
+|---|---|---|
+| gateway up + self-check (new client, exit, TLS, first call) | 10/10 | 11.3 s (9.5, 62.0) |
+| GetLightdInfo through the gateway | 10/10 | 1.2 s (0.4, 3.6) |
+| GetLatestBlock | 10/10 | 1.2 s (1.0, 3.9) |
+| 100-block sync (about 37 KB of compact blocks) | 10/10 | 4.1 s (3.6, 10.5) |
+| SendTransaction, rejection came back | 10/10 | 4.5 s (3.4, 7.6) |
+| `zecmix ip` (server-seen IP is the exit's) | 8/10 | 12.8 s (10.2, 15.1) |
+
+Each gateway run used one upstream connection, so one nymdial process carried
+the whole session (10 different exits over the 10 runs). The two `ip` failures
+were HTTP 522 answers from api.ipify.org (Cloudflare could not reach its
+origin); the tunnel itself worked.
+
+A second series later that afternoon, with an experimental nymdial build
+(nym-sdk patched to skip lost reply frames) and two mixpool series running on
+the same machine, did worse (6/10 block syncs, 7/10 self-checks): one block
+stream stalled after 2 blocks and the gateway reconnected for the next call,
+one DoH lookup failed at every resolver, and one run lost every exit it tried.
+Those logs are kept with the first ones; read the first table as a good hour,
+not a guarantee.
+
+## Earlier proof with nym-socks5-client (2026-10-11)
 
 All output below is from a real run on 2026-10-11 against Zcash **mainnet**
 through the **live Nym mixnet** (`nym-socks5-client` 1.1.86, release v2026.19).
@@ -279,8 +352,9 @@ timing correlation much harder than with a plain proxy or VPN.
 - **What the wallet asks for.** The server still sees your birthday height,
   sync pattern and transparent-address queries, and all calls in one gateway
   session share one connection. It can link them to each other, just not to
-  you. To avoid linking sessions, restart the gateway (new connection) or run
-  `zecmix nym setup --force` (new mixnet identity and exit).
+  you. To avoid linking sessions, restart the gateway: with nymdial that is a
+  new mixnet identity and usually a new exit. A `zecmix send` from the CLI is
+  its own connection and identity, separate from the gateway's sync.
 - **Transaction contents.** The mixnet hides *who* broadcast a transaction,
   not what is on chain. Transparent inputs and outputs are public whatever
   route the transaction takes.
@@ -288,19 +362,25 @@ timing correlation much harder than with a plain proxy or VPN.
   Nym user talks to zec.rocks. A party running both the exit and the server
   still cannot see your IP, but a global passive adversary is what Nym's
   timing defences are designed for, and those defences have limits.
-- **Bootstrap metadata.** `zecmix nym setup` and `ip` query the public Nym API
-  directly, just as `nym-socks5-client` does to fetch the network topology.
-  That reveals Nym use, nothing about Zcash.
+- **Bootstrap metadata.** nymdial (and `zecmix nym setup` and `ip`) query the
+  public Nym API directly for the exit list and topology, just as
+  `nym-socks5-client` does. That reveals Nym use, nothing about Zcash.
+- **Tunnel stalls (nym-sdk 1.21.6).** An IP Packet Router tunnel can stop
+  receiving after one lost reply frame (nym-sdk's in-order `MixnetStream`; see
+  the nymdial README). The gateway's HTTP/2 pings notice a dead upstream
+  connection within about 75 s and the next call opens a new one; a call
+  in flight on the stalled connection fails.
 - **The local hop.** Wallet to gateway is plaintext on loopback by default.
   Anyone who can sniff your loopback can already read your wallet. Use
   `--tls` if a wallet insists on HTTPS.
-- **Speed.** Expect seconds per call. A first call takes about 5 to 10 s
-  (mixnet stream plus TLS handshake), later calls about 1 to 2 s, and compact
-  blocks stream at mixnet bandwidth. Fine for a wallet that is mostly
+- **Speed.** Expect seconds per call. A first call takes about 10 to 40 s
+  (a new mixnet client, exit and health check, plus TLS; longer when nymdial
+  has to skip exits), later calls about 1 to 2 s, and compact blocks stream
+  at mixnet bandwidth. Fine for a wallet that is mostly
   synced. A multi-year rescan over the mixnet would be slow.
-- **Free bandwidth.** The socks5 client currently runs without zk-nym
-  bandwidth credentials, which the network allows today. If that changes,
-  credentials will be needed.
+- **Free bandwidth.** nymdial's clients (and the socks5 client) currently run
+  without zk-nym bandwidth credentials, which the network allows today. If
+  that changes, credentials will be needed.
 
 ### Relation to other work
 
@@ -315,18 +395,33 @@ timing correlation much harder than with a plain proxy or VPN.
   lightwalletd client that can take a custom server URL. It also gives you a
   scriptable CLI for broadcasts and lookups.
 - [mixpool](https://github.com/apeirs/mixpool), my earlier Nym build, does the
-  same for Bitcoin transaction broadcast via Esplora APIs. zecmix reuses its
-  client setup knowledge, but this is a new Go code base for gRPC/HTTP2.
+  same for Bitcoin transaction broadcast via Esplora APIs, and uses nymdial the
+  same way.
 
 ## Tests
 
 ```sh
 go test ./...                                  # offline, with fakes
-ZECMIX_LIVE=1 go test -run Live -v .           # live: real mixnet + mainnet lightwalletd
+ZECMIX_LIVE=1 go test -run Live -v .           # live: real mixnet + mainnet lightwalletd (nymdial on PATH)
 ```
 
-The offline tests run a fake SOCKS5 proxy that records every CONNECT, a fake
-DoH resolver and a fake TLS lightwalletd. They check that:
+The offline tests run a fake nymdial (the test binary itself, re-executed), a
+fake SOCKS5 proxy that records every CONNECT, a fake DoH resolver and a fake
+TLS lightwalletd. For the nymdial transport they check that:
+
+- the hostname goes to nymdial unresolved, one process per connection, and
+  nothing touches the SOCKS/DoH path;
+- a wallet's info, block stream, error status and send rejection all work
+  through the gateway over a single nymdial process, with no forwarding
+  headers;
+- the exit nymdial reports is recorded, and `--country`/`--exit` reach it;
+- a missing nymdial never leads to a direct connection (`UNAVAILABLE` from the
+  gateway, upstream never reached);
+- setup errors name the failed step, and a hung setup is timed out (or
+  cancelled with its context) and its process stopped;
+- closing the connection ends the nymdial process.
+
+For the socks5 transport they check that:
 
 - names are resolved through the mixnet and connected by IPv4;
 - `--dns exit` sends the name to the exit (SOCKS ATYP 3);
@@ -343,12 +438,11 @@ real v6/NU6.3 header) and the nym config patch.
 
 ## Future plans
 
-- A native Rust `nym-sdk` (or Go FFI) build, so no separate client binary is
-  needed, plus a fresh mixnet identity per broadcast.
 - `--split` mode: send `SendTransaction` over a separate connection and
   identity from the sync session, so the server cannot link a broadcast to the
   wallet that synced.
-- Optional random delay before broadcast, and pacing/cover traffic for sync.
+- Optional random delay before broadcast (mixpool has `--delay` now), and
+  pacing/cover traffic for sync.
 - Packaged builds (Linux/macOS/Windows), a systemd user unit, and a ZecHub
   guide that uses it.
 - Zebra/zcashd P2P (port 8233) over Nym's IP packet router, for full-node
